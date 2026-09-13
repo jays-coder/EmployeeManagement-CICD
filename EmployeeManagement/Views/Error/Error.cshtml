@@ -1,0 +1,21 @@
+﻿
+@{
+    ViewData["Title"] = "Error";
+    Layout = "~/Views/Shared/_Layout.cshtml";
+}
+
+<div class="container mt-5 text-center">
+    <h2>Something went wrong</h2>
+
+    <p>
+        We couldn't process your request right now.
+        Please try again later.
+    </p>
+
+    <a asp-controller="Employee"
+       asp-action="Index"
+       class="btn btn-primary">
+        Back to Employees
+    </a>
+</div>
+
