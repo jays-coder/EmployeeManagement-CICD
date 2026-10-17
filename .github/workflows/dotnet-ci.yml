@@ -1,16 +1,25 @@
-﻿
+
       - name: Deploy to local IIS
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $source = Join-Path $env:GITHUB_WORKSPACE 'publish'
-          $destination = 'C:\inetpub\EmployeeManagement'
+on:
+  push:
+    branches:
+      - main
 
-          if (-not (Test-Path $source)) {
-            throw "Publish folder not found: $source"
-          }
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: [self-hosted, Windows, X64]
 
           if (-not (Test-Path (Join-Path $source 'web.config'))) {
             throw "web.config not found. Check the ASP.NET Core publish output."
@@ -20,9 +29,14 @@
 
           $offlineFile = Join-Path $destination 'app_offline.htm'
 
-          Set-Content -Path $offlineFile `
-            -Value 'Application deployment in progress. Please retry shortly.' `
-            -Encoding UTF8
+      - name: Verify .NET SDK
+        shell: powershell
+        run: |
+          dotnet --list-sdks
+          if (-not (dotnet --list-sdks | Select-String '^8\.')) {
+            Write-Error ".NET 8 SDK is not available to the runner."
+            exit 1
+          }
 
           Start-Sleep -Seconds 5
 
@@ -32,6 +46,12 @@
             throw "Robocopy failed with exit code $LASTEXITCODE. Check deployment permissions and logs."
           }
 
-          Remove-Item $offlineFile -Force
+      - name: Publish application
+        run: dotnet publish EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build --output "${{ github.workspace }}\publish"
 
-          Write-Host 'Deployment completed successfully.'
+      - name: Upload application artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: employee-management-app
+          path: ./publish/
+          if-no-files-found: error
