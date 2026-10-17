@@ -1,9 +1,5 @@
 
-      - name: Deploy to local IIS
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
+name: .NET 8 CI/CD - EmployeeManagement
 
 on:
   push:
@@ -21,41 +17,49 @@ jobs:
   build:
     runs-on: [self-hosted, Windows, X64]
 
-          if (-not (Test-Path (Join-Path $source 'web.config'))) {
-            throw "web.config not found. Check the ASP.NET Core publish output."
-          }
+    steps:
+      # 1. Download source code
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-          New-Item -ItemType Directory -Path $destination -Force | Out-Null
-
-          $offlineFile = Join-Path $destination 'app_offline.htm'
-
+      # 2. Verify the installed .NET 8 SDK
       - name: Verify .NET SDK
         shell: powershell
         run: |
           dotnet --list-sdks
-          if (-not (dotnet --list-sdks | Select-String '^8\.')) {
-            Write-Error ".NET 8 SDK is not available to the runner."
-            exit 1
+
+          $sdk = dotnet --list-sdks |
+            Select-String '^8\.'
+
+          if (-not $sdk) {
+            throw ".NET 8 SDK is not installed or unavailable to the runner."
           }
 
-          Start-Sleep -Seconds 5
+      # 3. Restore NuGet packages
+      - name: Restore dependencies
+        run: dotnet restore EmployeeManagement/EmployeeManagement.csproj
 
-          robocopy $source $destination /MIR /R:2 /W:2 /XF app_offline.htm
+      # 4. Build the application
+      - name: Build application
+        run: dotnet build EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-restore
 
-          if ($LASTEXITCODE -ge 8) {
-            throw "Robocopy failed with exit code $LASTEXITCODE. Check deployment permissions and logs."
-          }
+      # 5. Run tests
+      - name: Run tests
+        run: dotnet test EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build
 
+      # 6. Publish the application
       - name: Publish application
         run: dotnet publish EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build --output "${{ github.workspace }}\publish"
 
+      # 7. Upload the build artifact
       - name: Upload application artifact
         uses: actions/upload-artifact@v4
         with:
           name: employee-management-app
           path: ./publish/
           if-no-files-found: error
-          
+
+      # 8. Deploy to local IIS after pushes to main
       - name: Deploy to local IIS
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: powershell
@@ -70,15 +74,18 @@ jobs:
           }
 
           if (-not (Test-Path (Join-Path $source 'web.config'))) {
-            throw "web.config not found. Check the ASP.NET Core publish output."
+            throw "web.config not found. Ensure ASP.NET Core publish output is correct."
           }
 
-          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          if (-not (Test-Path $destination)) {
+            New-Item -ItemType Directory -Path $destination -Force |
+              Out-Null
+          }
 
           $offlineFile = Join-Path $destination 'app_offline.htm'
 
           Set-Content -Path $offlineFile `
-            -Value 'Application deployment in progress. Please retry shortly.' `
+            -Value 'Application deployment in progress.' `
             -Encoding UTF8
 
           Start-Sleep -Seconds 5
@@ -86,10 +93,9 @@ jobs:
           robocopy $source $destination /MIR /R:2 /W:2 /XF app_offline.htm
 
           if ($LASTEXITCODE -ge 8) {
-            throw "Robocopy failed with exit code $LASTEXITCODE. Check deployment permissions and logs."
+            throw "Deployment copy failed. Robocopy exit code: $LASTEXITCODE"
           }
 
           Remove-Item $offlineFile -Force
 
-          Write-Host 'Deployment completed successfully.'
-
+          Write-Host "Deployment completed successfully."
