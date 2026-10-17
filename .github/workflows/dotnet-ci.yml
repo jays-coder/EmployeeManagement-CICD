@@ -1,13 +1,17 @@
-﻿
+
 name: .NET CI
 
 on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -17,10 +21,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+      - name: Verify .NET SDK
+        shell: powershell
+        run: |
+          dotnet --list-sdks
+          if (-not (dotnet --list-sdks | Select-String '^8\.')) {
+            Write-Error ".NET 8 SDK is not available to the runner."
+            exit 1
+          }
 
       - name: Restore dependencies
         run: dotnet restore EmployeeManagement/EmployeeManagement.csproj
@@ -32,10 +40,11 @@ jobs:
         run: dotnet test EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build
 
       - name: Publish application
-        run: dotnet publish EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build --output ./publish
+        run: dotnet publish EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build --output "${{ github.workspace }}\publish"
 
       - name: Upload application artifact
         uses: actions/upload-artifact@v4
         with:
           name: employee-management-app
-          path: ./publish
+          path: ./publish/
+          if-no-files-found: error
