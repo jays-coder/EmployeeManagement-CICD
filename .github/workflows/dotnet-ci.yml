@@ -55,3 +55,41 @@ jobs:
           name: employee-management-app
           path: ./publish/
           if-no-files-found: error
+          
+      - name: Deploy to local IIS
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $source = Join-Path $env:GITHUB_WORKSPACE 'publish'
+          $destination = 'C:\inetpub\EmployeeManagement'
+
+          if (-not (Test-Path $source)) {
+            throw "Publish folder not found: $source"
+          }
+
+          if (-not (Test-Path (Join-Path $source 'web.config'))) {
+            throw "web.config not found. Check the ASP.NET Core publish output."
+          }
+
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+
+          $offlineFile = Join-Path $destination 'app_offline.htm'
+
+          Set-Content -Path $offlineFile `
+            -Value 'Application deployment in progress. Please retry shortly.' `
+            -Encoding UTF8
+
+          Start-Sleep -Seconds 5
+
+          robocopy $source $destination /MIR /R:2 /W:2 /XF app_offline.htm
+
+          if ($LASTEXITCODE -ge 8) {
+            throw "Robocopy failed with exit code $LASTEXITCODE. Check deployment permissions and logs."
+          }
+
+          Remove-Item $offlineFile -Force
+
+          Write-Host 'Deployment completed successfully.'
+
