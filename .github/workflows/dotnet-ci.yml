@@ -1,41 +1,37 @@
 ﻿
-name: .NET CI
+      - name: Deploy to local IIS
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
 
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+          $source = Join-Path $env:GITHUB_WORKSPACE 'publish'
+          $destination = 'C:\inetpub\EmployeeManagement'
 
-jobs:
-  build:
-    runs-on: [self-hosted, Windows, X64]
+          if (-not (Test-Path $source)) {
+            throw "Publish folder not found: $source"
+          }
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+          if (-not (Test-Path (Join-Path $source 'web.config'))) {
+            throw "web.config not found. Check the ASP.NET Core publish output."
+          }
 
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
 
-      - name: Restore dependencies
-        run: dotnet restore EmployeeManagement/EmployeeManagement.csproj
+          $offlineFile = Join-Path $destination 'app_offline.htm'
 
-      - name: Build application
-        run: dotnet build EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-restore
+          Set-Content -Path $offlineFile `
+            -Value 'Application deployment in progress. Please retry shortly.' `
+            -Encoding UTF8
 
-      - name: Run tests
-        run: dotnet test EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build
+          Start-Sleep -Seconds 5
 
-      - name: Publish application
-        run: dotnet publish EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build --output ./publish
+          robocopy $source $destination /MIR /R:2 /W:2 /XF app_offline.htm
 
-      - name: Upload application artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: employee-management-app
-          path: ./publish
+          if ($LASTEXITCODE -ge 8) {
+            throw "Robocopy failed with exit code $LASTEXITCODE. Check deployment permissions and logs."
+          }
+
+          Remove-Item $offlineFile -Force
+
+          Write-Host 'Deployment completed successfully.'
