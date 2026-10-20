@@ -42,7 +42,38 @@ jobs:
       # 4. Build the application
       - name: Build application
         run: dotnet build EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-restore
+       
+             # Generate an idempotent EF Core migration script
+      - name: Generate database migration script
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
 
+          $toolPath = Join-Path $env:RUNNER_TEMP 'dotnet-tools'
+
+          if (-not (Test-Path (Join-Path $toolPath 'dotnet-ef.exe'))) {
+            dotnet tool install dotnet-ef --tool-path $toolPath --version 8.*
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to install dotnet-ef."
+            }
+          }
+
+          $efTool = Join-Path $toolPath 'dotnet-ef.exe'
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'migration.sql'
+
+          & $efTool migrations script --idempotent `
+            --project EmployeeManagement/EmployeeManagement.csproj `
+            --output $scriptPath
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to generate migration SQL script."
+          }
+
+          if (-not (Test-Path $scriptPath)) {
+            throw "Migration SQL script was not generated."
+          }
+
+          Write-Host "Migration SQL generated: $scriptPath"
       # 5. Run tests
       - name: Run tests
         run: dotnet test EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build
@@ -58,7 +89,14 @@ jobs:
           name: employee-management-app
           path: ./publish/
           if-no-files-found: error
-
+      
+            # Upload the database migration script
+      - name: Upload migration SQL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: employee-management-migration-sql
+          path: ./migration.sql
+          if-no-files-found: error
       # 8. Deploy to local IIS after pushes to main
       - name: Deploy to local IIS
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
