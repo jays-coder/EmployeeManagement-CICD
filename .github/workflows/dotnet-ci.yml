@@ -22,7 +22,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Verify the installed .NET 8 SDK
+      # 2. Verify .NET 8 SDK
       - name: Verify .NET SDK
         shell: powershell
         run: |
@@ -37,67 +37,144 @@ jobs:
 
       # 3. Restore NuGet packages
       - name: Restore dependencies
-        run: dotnet restore EmployeeManagement/EmployeeManagement.csproj
+        shell: powershell
+        run: |
+          dotnet restore EmployeeManagement/EmployeeManagement.csproj
 
-      # 4. Build the application
+          if ($LASTEXITCODE -ne 0) {
+            throw "NuGet restore failed."
+          }
+
+      # 4. Build application
       - name: Build application
-        run: dotnet build EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-restore
-       
-             # Generate an idempotent EF Core migration script
+        shell: powershell
+        run: |
+          dotnet build EmployeeManagement/EmployeeManagement.csproj `
+            --configuration Release `
+            --no-restore
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Application build failed."
+          }
+
+      # 5. Install dotnet-ef and generate migration SQL
       - name: Generate database migration script
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
 
           $toolPath = Join-Path $env:RUNNER_TEMP 'dotnet-tools'
+          $efTool = Join-Path $toolPath 'dotnet-ef.exe'
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'migration.sql'
 
-          if (-not (Test-Path (Join-Path $toolPath 'dotnet-ef.exe'))) {
-            dotnet tool install dotnet-ef --tool-path $toolPath --version 8.*
+          New-Item -ItemType Directory -Path $toolPath -Force |
+            Out-Null
+
+          if (-not (Test-Path $efTool)) {
+            dotnet tool install dotnet-ef `
+              --tool-path $toolPath `
+              --version 8.*
+
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to install dotnet-ef."
             }
           }
 
-          $efTool = Join-Path $toolPath 'dotnet-ef.exe'
-          $scriptPath = Join-Path $env:GITHUB_WORKSPACE 'migration.sql'
-
-          & $efTool migrations script --idempotent `
+          & $efTool migrations script `
+            --idempotent `
             --project EmployeeManagement/EmployeeManagement.csproj `
             --output $scriptPath
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to generate migration SQL script."
+            throw "Failed to generate migration SQL."
           }
 
           if (-not (Test-Path $scriptPath)) {
             throw "Migration SQL script was not generated."
           }
 
-          Write-Host "Migration SQL generated: $scriptPath"
-      # 5. Run tests
+          Write-Host "Migration SQL generated successfully."
+
+      # 6. Run tests
       - name: Run tests
-        run: dotnet test EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build
+        shell: powershell
+        run: |
+          dotnet test EmployeeManagement/EmployeeManagement.csproj `
+            --configuration Release `
+            --no-build
 
-      # 6. Publish the application
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tests failed."
+          }
+
+      # 7. Publish application
       - name: Publish application
-        run: dotnet publish EmployeeManagement/EmployeeManagement.csproj --configuration Release --no-build --output "${{ github.workspace }}\publish"
+        shell: powershell
+        run: |
+          $publishPath = Join-Path $env:GITHUB_WORKSPACE 'publish'
 
-      # 7. Upload the build artifact
+          dotnet publish EmployeeManagement/EmployeeManagement.csproj `
+            --configuration Release `
+            --no-build `
+            --output $publishPath
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Application publish failed."
+          }
+
+          if (-not (Test-Path (Join-Path $publishPath 'web.config'))) {
+            throw "Published web.config was not found."
+          }
+
+      # 8. Upload application artifact
       - name: Upload application artifact
         uses: actions/upload-artifact@v4
         with:
           name: employee-management-app
           path: ./publish/
           if-no-files-found: error
-      
-            # Upload the database migration script
+
+      # 9. Upload EF Core migration SQL artifact
       - name: Upload migration SQL artifact
         uses: actions/upload-artifact@v4
         with:
           name: employee-management-migration-sql
           path: ./migration.sql
           if-no-files-found: error
-      # 8. Deploy to local IIS after pushes to main
+
+      # 10. Apply database migrations on pushes to main only
+      - name: Apply database migrations
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $sqlScript = Join-Path $env:GITHUB_WORKSPACE 'migration.sql'
+
+          if (-not (Test-Path $sqlScript)) {
+            throw "Migration SQL script not found: $sqlScript"
+          }
+
+          $sqlcmd = Get-Command sqlcmd -ErrorAction SilentlyContinue
+
+          if (-not $sqlcmd) {
+            throw "sqlcmd is not installed or is not available in PATH."
+          }
+
+          & $sqlcmd.Source `
+            -S 'Mrityunjay' `
+            -d 'EmployeeManagementDb' `
+            -E `
+            -b `
+            -i $sqlScript
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Database migration failed. SQLCMD exit code: $LASTEXITCODE"
+          }
+
+          Write-Host "Database migrations completed successfully."
+
+      # 11. Deploy to local IIS on pushes to main only
       - name: Deploy to local IIS
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: powershell
@@ -112,7 +189,7 @@ jobs:
           }
 
           if (-not (Test-Path (Join-Path $source 'web.config'))) {
-            throw "web.config not found. Ensure ASP.NET Core publish output is correct."
+            throw "web.config not found in published output."
           }
 
           if (-not (Test-Path $destination)) {
@@ -130,8 +207,11 @@ jobs:
 
           robocopy $source $destination /MIR /R:2 /W:2 /XF app_offline.htm
 
-          if ($LASTEXITCODE -ge 8) {
-            throw "Deployment copy failed. Robocopy exit code: $LASTEXITCODE"
+          $robocopyExitCode = $LASTEXITCODE
+
+          if ($robocopyExitCode -ge 8) {
+            Remove-Item $offlineFile -Force -ErrorAction SilentlyContinue
+            throw "Deployment copy failed. Robocopy exit code: $robocopyExitCode"
           }
 
           Remove-Item $offlineFile -Force
